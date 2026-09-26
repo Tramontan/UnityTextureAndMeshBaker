@@ -103,28 +103,30 @@ namespace MeshSectionBaker
             Matrix4x4 worldToLocal = sectionObject.transform.worldToLocalMatrix;
             record.output = sectionObject;
 
-            // Render groups: renderers that may share one MeshRenderer.
-            int groupIndex = 0;
-            foreach (IGrouping<string, MeshRenderer> group in cell.units.SelectMany(u => u.renderers).GroupBy(RenderKey))
+            // Render: one level normally; with LODs inside the objects, one merged mesh set per LOD
+            // level plus a LODGroup on the section.
+            int maxLevel = cell.units.Count > 0 ? cell.units.Max(u => u.MaxLodLevel) : 0;
+            if (maxLevel == 0)
             {
-                List<MeshRenderer> renderers = group.ToList();
-                MeshRenderer first = renderers[0];
+                BuildRenderObjects(record, sectionObject, worldToLocal, cell.units.SelectMany(u => u.renderers).ToList(), "Render", folder);
+            }
+            else
+            {
+                var lodRenderers = new List<Renderer>[maxLevel + 1];
+                for (int level = 0; level <= maxLevel; level++)
+                {
+                    List<MeshRenderer> renderers = cell.units.SelectMany(u => u.RenderersForLevel(level)).Distinct().ToList();
+                    lodRenderers[level] = BuildRenderObjects(record, sectionObject, worldToLocal, renderers, $"LOD{level}", folder);
+                }
 
-                Mesh mesh = MeshCombiner.CombineRender(renderers, worldToLocal, out Material[] materials);
-                mesh.name = $"{record.name}_Render{groupIndex}";
-                record.meshAssetPaths.Add(SaveMesh(mesh, folder));
+                float sectionSize = WorldSize(lodRenderers[0]);
+                float[] heights = SectionLodHeights(cell, maxLevel, sectionSize);
+                var lods = new LOD[maxLevel + 1];
+                for (int level = 0; level <= maxLevel; level++) lods[level] = new LOD(heights[level], lodRenderers[level].ToArray());
 
-                var renderObject = new GameObject(groupIndex == 0 ? "Render" : $"Render_{groupIndex}");
-                renderObject.transform.SetParent(sectionObject.transform, false);
-                renderObject.layer = first.gameObject.layer;
-                renderObject.tag = first.gameObject.tag;
-                GameObjectUtility.SetStaticEditorFlags(renderObject, UnionFlags(renderers.Select(r => r.gameObject)));
-
-                renderObject.AddComponent<MeshFilter>().sharedMesh = mesh;
-                var meshRenderer = renderObject.AddComponent<MeshRenderer>();
-                meshRenderer.sharedMaterials = materials;
-                CopyRendererSettings(first, meshRenderer);
-                groupIndex++;
+                LODGroup lodGroup = sectionObject.AddComponent<LODGroup>();
+                lodGroup.SetLODs(lods);
+                lodGroup.RecalculateBounds();
             }
 
             // Collision of the objects that are removed (objects that stay keep their own colliders).
@@ -217,6 +219,91 @@ namespace MeshSectionBaker
 
             grid.bakedSections.Remove(section);
             return missing;
+        }
+
+        /// <summary>Merges renderers into one object per render-settings group; returns the created renderers.</summary>
+        private static List<Renderer> BuildRenderObjects(BakedSection record, GameObject sectionObject, Matrix4x4 worldToLocal,
+            List<MeshRenderer> sourceRenderers, string prefix, string folder)
+        {
+            var created = new List<Renderer>();
+            int groupIndex = 0;
+            foreach (IGrouping<string, MeshRenderer> group in sourceRenderers.GroupBy(RenderKey))
+            {
+                List<MeshRenderer> renderers = group.ToList();
+                MeshRenderer first = renderers[0];
+
+                Mesh mesh = MeshCombiner.CombineRender(renderers, worldToLocal, out Material[] materials);
+                mesh.name = $"{record.name}_{prefix}{(groupIndex == 0 ? string.Empty : "_" + groupIndex)}";
+                record.meshAssetPaths.Add(SaveMesh(mesh, folder));
+
+                var renderObject = new GameObject(groupIndex == 0 ? prefix : $"{prefix}_{groupIndex}");
+                renderObject.transform.SetParent(sectionObject.transform, false);
+                renderObject.layer = first.gameObject.layer;
+                renderObject.tag = first.gameObject.tag;
+                GameObjectUtility.SetStaticEditorFlags(renderObject, UnionFlags(renderers.Select(r => r.gameObject)));
+
+                renderObject.AddComponent<MeshFilter>().sharedMesh = mesh;
+                var meshRenderer = renderObject.AddComponent<MeshRenderer>();
+                meshRenderer.sharedMaterials = materials;
+                CopyRendererSettings(first, meshRenderer);
+                created.Add(meshRenderer);
+                groupIndex++;
+            }
+
+            return created;
+        }
+
+        /// <summary>
+        /// Section LOD switch heights from the objects' own LODGroups. Screen height is relative to
+        /// object size, so each object's height is rescaled by (object size / section size) to switch at
+        /// the same distance; the median across objects is used. The section is culled only if every
+        /// object in it is culled - otherwise objects without LODs would vanish.
+        /// </summary>
+        private static float[] SectionLodHeights(SectionCell cell, int maxLevel, float sectionSize)
+        {
+            var heights = new float[maxLevel + 1];
+            List<LodSet> sets = cell.units.SelectMany(u => u.lodSets).Where(s => s.heights.Length > 1).ToList();
+            float size = Mathf.Max(sectionSize, 0.01f);
+
+            for (int level = 0; level < maxLevel; level++)
+            {
+                List<float> values = sets
+                    .Where(s => s.heights.Length - 1 > level)
+                    .Select(s => s.heights[level] * s.worldSize / size)
+                    .ToList();
+                heights[level] = values.Count > 0 ? Median(values) : (level == 0 ? 0.5f : heights[level - 1] * 0.5f);
+            }
+
+            bool everyObjectCulls = cell.units.All(u => u.lodSets.Count > 0 && u.lodFree.Count == 0) &&
+                                    sets.Count > 0 && sets.All(s => s.heights[s.heights.Length - 1] > 0f);
+            heights[maxLevel] = everyObjectCulls
+                ? Median(sets.Select(s => s.heights[s.heights.Length - 1] * s.worldSize / size).ToList())
+                : 0f;
+
+            // Strictly decreasing, as LODGroup requires.
+            heights[0] = Mathf.Clamp(heights[0], 0.0005f, 1f);
+            for (int level = 1; level <= maxLevel; level++)
+            {
+                float cap = heights[level - 1] * 0.95f;
+                heights[level] = level == maxLevel && heights[level] <= 0f ? 0f : Mathf.Clamp(heights[level], 0.0001f, cap);
+            }
+
+            return heights;
+        }
+
+        private static float Median(List<float> values)
+        {
+            values.Sort();
+            int mid = values.Count / 2;
+            return values.Count % 2 == 1 ? values[mid] : (values[mid - 1] + values[mid]) * 0.5f;
+        }
+
+        private static float WorldSize(List<Renderer> renderers)
+        {
+            if (renderers.Count == 0) return 1f;
+            Bounds bounds = renderers[0].bounds;
+            foreach (Renderer renderer in renderers) bounds.Encapsulate(renderer.bounds);
+            return Mathf.Max(bounds.size.x, Mathf.Max(bounds.size.y, bounds.size.z));
         }
 
         private static string RenderKey(MeshRenderer renderer)

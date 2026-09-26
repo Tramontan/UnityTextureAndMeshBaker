@@ -18,6 +18,41 @@ namespace MeshSectionBaker
         public Vector3 center;
         public bool removable;
         public string keepReason;
+
+        /// <summary>LODGroups inside the object, with their eligible renderers per level.</summary>
+        public readonly List<LodSet> lodSets = new List<LodSet>();
+
+        /// <summary>Renderers not controlled by any LODGroup - drawn at every level.</summary>
+        public readonly List<MeshRenderer> lodFree = new List<MeshRenderer>();
+
+        public int MaxLodLevel
+        {
+            get
+            {
+                int max = 0;
+                foreach (LodSet set in lodSets) max = Mathf.Max(max, set.levels.Count - 1);
+                return max;
+            }
+        }
+
+        /// <summary>What this object shows at a given section LOD level (its own last level once it runs out).</summary>
+        public IEnumerable<MeshRenderer> RenderersForLevel(int level)
+        {
+            foreach (MeshRenderer renderer in lodFree) yield return renderer;
+            foreach (LodSet set in lodSets)
+            {
+                if (set.levels.Count == 0) continue;
+                foreach (MeshRenderer renderer in set.levels[Mathf.Min(level, set.levels.Count - 1)]) yield return renderer;
+            }
+        }
+    }
+
+    public sealed class LodSet
+    {
+        public LODGroup group;
+        public float worldSize;
+        public float[] heights;
+        public readonly List<List<MeshRenderer>> levels = new List<List<MeshRenderer>>();
     }
 
     public sealed class SectionCell
@@ -227,8 +262,14 @@ namespace MeshSectionBaker
         {
             if (scopeRoot == null)
             {
-                GameObject outermost = PrefabUtility.GetOutermostPrefabInstanceRoot(go);
-                return outermost != null ? outermost : go;
+                // Objects added under a prefab instance (e.g. LOD children made by Tools/Создание LOD)
+                // aren't part of the prefab themselves but belong to the instance they sit in.
+                for (Transform t = go.transform; t != null; t = t.parent)
+                {
+                    if (PrefabUtility.IsPartOfPrefabInstance(t.gameObject)) return PrefabUtility.GetOutermostPrefabInstanceRoot(t.gameObject);
+                }
+
+                return go;
             }
 
             GameObject highest = null;
@@ -357,14 +398,65 @@ namespace MeshSectionBaker
 
         private static void AddToCell(SectionCell cell, SourceUnit unit)
         {
+            AssignLods(unit);
             cell.units.Add(unit);
-            foreach (MeshRenderer renderer in unit.renderers)
+            cell.rendererCount += unit.renderers.Count;
+
+            // Stats describe what is drawn up close: LOD0 plus renderers outside any LODGroup.
+            foreach (MeshRenderer renderer in unit.RenderersForLevel(0))
             {
                 Mesh mesh = renderer.GetComponent<MeshFilter>().sharedMesh;
-                cell.rendererCount++;
                 cell.submeshCount += mesh.subMeshCount;
                 for (int s = 0; s < mesh.subMeshCount; s++) cell.triangleCount += mesh.GetIndexCount(s) / 3;
                 foreach (Material material in renderer.sharedMaterials) cell.materials.Add(material);
+            }
+        }
+
+        /// <summary>
+        /// Sorts the unit's renderers into LOD levels of the LODGroups inside it (e.g. made by
+        /// Tools/Создание LOD). Renderers outside any LODGroup are shown at every level.
+        /// </summary>
+        private static void AssignLods(SourceUnit unit)
+        {
+            unit.lodSets.Clear();
+            unit.lodFree.Clear();
+            var eligible = new HashSet<MeshRenderer>(unit.renderers);
+            var assigned = new HashSet<MeshRenderer>();
+
+            foreach (LODGroup group in unit.root.GetComponentsInChildren<LODGroup>(true))
+            {
+                LOD[] lods = group.GetLODs();
+                if (lods.Length == 0) continue;
+
+                Vector3 scale = group.transform.lossyScale;
+                var set = new LodSet
+                {
+                    group = group,
+                    worldSize = group.size * Mathf.Max(Mathf.Abs(scale.x), Mathf.Max(Mathf.Abs(scale.y), Mathf.Abs(scale.z))),
+                    heights = lods.Select(l => l.screenRelativeTransitionHeight).ToArray()
+                };
+
+                foreach (LOD lod in lods)
+                {
+                    var level = new List<MeshRenderer>();
+                    foreach (Renderer renderer in lod.renderers)
+                    {
+                        if (renderer is MeshRenderer meshRenderer && eligible.Contains(meshRenderer))
+                        {
+                            level.Add(meshRenderer);
+                            assigned.Add(meshRenderer);
+                        }
+                    }
+
+                    set.levels.Add(level);
+                }
+
+                unit.lodSets.Add(set);
+            }
+
+            foreach (MeshRenderer renderer in unit.renderers)
+            {
+                if (!assigned.Contains(renderer)) unit.lodFree.Add(renderer);
             }
         }
 
@@ -428,7 +520,6 @@ namespace MeshSectionBaker
 
             if (!mesh.isReadable) { reason = "меш без Read/Write"; return false; }
             if (renderer.sharedMaterials.Length != mesh.subMeshCount) { reason = "число материалов не совпадает с числом сабмешей"; return false; }
-            if (renderer.GetComponentInParent<LODGroup>() != null) { reason = "внутри LODGroup"; return false; }
 
             for (int s = 0; s < mesh.subMeshCount; s++)
             {
@@ -489,6 +580,9 @@ namespace MeshSectionBaker
                             }
 
                             unit.colliders.Add(collider);
+                            continue;
+                        case LODGroup _:
+                        case LodCreator.LodCreatorRecord _:
                             continue;
                         case Animator animator when animator.runtimeAnimatorController == null:
                             continue;
