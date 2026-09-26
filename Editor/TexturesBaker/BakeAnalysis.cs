@@ -27,6 +27,32 @@ namespace TexturesBaker
         {
             return shader != null && (shader.FindPropertyIndex("_BaseMap") >= 0 || shader.FindPropertyIndex("_MainTex") >= 0);
         }
+
+        /// <summary>
+        /// What kind of shading a material asks for, as far as sharing one atlas material goes: its own shader and
+        /// how it draws - opaque, alpha-clipped (cutout) or transparent, one- or two-sided. Materials of different
+        /// kinds cannot share an atlas material without one of them losing its look: foliage turns into opaque
+        /// cards, walls get holes, leaves lose their back faces. Returns a key to group by and a label to show.
+        /// </summary>
+        public static string ShaderType(Material material, out string label)
+        {
+            if (material == null || material.shader == null)
+            {
+                label = "нет шейдера";
+                return string.Empty;
+            }
+
+            bool clipped = material.IsKeywordEnabled("_ALPHATEST_ON")
+                           || (material.HasProperty("_AlphaClip") && material.GetFloat("_AlphaClip") > 0.5f);
+            int queue = material.renderQueue;
+            string mode = queue >= (int)RenderQueue.Transparent ? "прозрачный"
+                : clipped || queue >= (int)RenderQueue.AlphaTest ? "вырезка"
+                : "непрозрачный";
+            bool twoSided = material.HasProperty("_Cull") && Mathf.Approximately(material.GetFloat("_Cull"), (float)CullMode.Off);
+
+            label = $"{material.shader.name} ({mode}{(twoSided ? ", двусторонний" : string.Empty)})";
+            return $"{material.shader.name}|{mode}|{(twoSided ? 2 : 1)}";
+        }
     }
 
     public sealed class MaterialUsageInfo

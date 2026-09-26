@@ -11,6 +11,9 @@ namespace TexturesBaker
         public Texture texture;
         public Color tint;
         public Shader shader;
+        /// <summary>The materials' shader type (MaterialProps.ShaderType) when atlases are split by it, else empty.</summary>
+        public string shaderType = string.Empty;
+        public string shaderTypeLabel = string.Empty;
         public int width;
         public int height;
         public readonly List<Material> materials = new List<Material>();
@@ -49,9 +52,12 @@ namespace TexturesBaker
 
     /// <summary>
     /// Turns "these materials into N materials" into a concrete layout: splits cells by shader
-    /// (different shaders can't share a material), balances the rest by texel area, then packs
-    /// each atlas at the largest uniform scale that fits the max atlas size. The same plan object
-    /// drives both the window preview and the bake, so what you see is what gets baked.
+    /// (different shaders can't share a material) - and, with splitByShaderType, by the kind of shading
+    /// each material asks for (its own shader, opaque/cutout/transparent, one- or two-sided), so trees
+    /// and houses never land in one atlas even when both use the same or a forced shader - then balances
+    /// the rest by texel area and packs each atlas at the largest uniform scale that fits the max atlas
+    /// size. The same plan object drives both the window preview and the bake, so what you see is what
+    /// gets baked.
     /// </summary>
     public static class AtlasPlanner
     {
@@ -59,10 +65,11 @@ namespace TexturesBaker
         private const int MinAtlasSize = 64;
         private const float MinUsefulScale = 0.02f;
 
-        public static BakePlan Build(IReadOnlyList<MaterialUsageInfo> included, int requestedCount, int maxAtlasSize, int padding, Shader forcedShader)
+        public static BakePlan Build(IReadOnlyList<MaterialUsageInfo> included, int requestedCount, int maxAtlasSize, int padding, Shader forcedShader,
+            bool splitByShaderType = false)
         {
             var plan = new BakePlan();
-            List<AtlasItem> items = BuildItems(included, forcedShader);
+            List<AtlasItem> items = BuildItems(included, forcedShader, splitByShaderType);
             plan.itemCount = items.Count;
 
             if (items.Count == 0)
@@ -72,7 +79,7 @@ namespace TexturesBaker
             }
 
             List<List<AtlasItem>> groups = items
-                .GroupBy(i => i.shader)
+                .GroupBy(i => (i.shader, i.shaderType))
                 .Select(g => g.ToList())
                 .OrderByDescending(g => g.Sum(i => i.Area))
                 .ToList();
@@ -80,9 +87,12 @@ namespace TexturesBaker
             plan.minMaterialCount = groups.Count;
             if (requestedCount < groups.Count)
             {
-                string shaders = string.Join(", ", groups.Select(g => $"'{g[0].shader.name}'"));
-                plan.errors.Add($"Материалы используют {groups.Count} разных шейдера ({shaders}) — материалов на выходе должно быть не меньше {groups.Count}. " +
-                                "Либо включите «Приводить к одному шейдеру», либо исключите лишние материалы.");
+                string kinds = string.Join(", ", groups.Select(g => $"'{GroupLabel(g[0])}'"));
+                plan.errors.Add(splitByShaderType
+                    ? $"Материалы делятся на {groups.Count} типа шейдеров ({kinds}) — материалов на выходе должно быть не меньше {groups.Count}. " +
+                      "Увеличьте число материалов, выключите «Разделять атласы по типу шейдера» или исключите лишние материалы."
+                    : $"Материалы используют {groups.Count} разных шейдера ({kinds}) — материалов на выходе должно быть не меньше {groups.Count}. " +
+                      "Либо включите «Приводить к одному шейдеру», либо исключите лишние материалы.");
                 return plan;
             }
 
@@ -94,7 +104,7 @@ namespace TexturesBaker
                     AtlasPlan atlas = Pack(bucket, maxAtlasSize, padding);
                     if (atlas == null)
                     {
-                        plan.errors.Add($"Текстуры шейдера '{groups[g][0].shader.name}' не помещаются в атлас {maxAtlasSize}px — увеличьте число материалов или размер атласа.");
+                        plan.errors.Add($"Текстуры шейдера '{GroupLabel(groups[g][0])}' не помещаются в атлас {maxAtlasSize}px — увеличьте число материалов или размер атласа.");
                         continue;
                     }
 
@@ -119,15 +129,23 @@ namespace TexturesBaker
             return new Vector2Int(RoundTo4(item.width * scale), RoundTo4(item.height * scale));
         }
 
-        private static List<AtlasItem> BuildItems(IReadOnlyList<MaterialUsageInfo> included, Shader forcedShader)
+        private static string GroupLabel(AtlasItem item)
         {
-            var byKey = new Dictionary<(Shader, Texture, Color), AtlasItem>();
+            return string.IsNullOrEmpty(item.shaderTypeLabel) ? item.shader.name : item.shaderTypeLabel;
+        }
+
+        private static List<AtlasItem> BuildItems(IReadOnlyList<MaterialUsageInfo> included, Shader forcedShader, bool splitByShaderType)
+        {
+            var byKey = new Dictionary<(Shader, Texture, Color, string), AtlasItem>();
             var items = new List<AtlasItem>();
 
             foreach (MaterialUsageInfo info in included)
             {
                 Shader shader = forcedShader != null ? forcedShader : info.material.shader;
-                var key = (shader, info.texture, info.tint);
+                // Taken from the material's own shader, not the forced one: that is what tells trees from houses.
+                string typeLabel = string.Empty;
+                string type = splitByShaderType ? MaterialProps.ShaderType(info.material, out typeLabel) : string.Empty;
+                var key = (shader, info.texture, info.tint, type);
                 if (!byKey.TryGetValue(key, out AtlasItem item))
                 {
                     item = new AtlasItem
@@ -135,6 +153,8 @@ namespace TexturesBaker
                         texture = info.texture,
                         tint = info.tint,
                         shader = shader,
+                        shaderType = type,
+                        shaderTypeLabel = typeLabel,
                         width = info.SourceWidth,
                         height = info.SourceHeight
                     };

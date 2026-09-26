@@ -29,6 +29,7 @@ namespace TexturesBaker
         [SerializeField] private bool replaceInOpenScenes = true;
         [SerializeField] private bool forceSingleShader;
         [SerializeField] private Shader forcedShader;
+        [SerializeField] private bool splitByShaderType = true;
         [SerializeField] private int tab;
 
         private PrefabAnalysis _analysis;
@@ -140,7 +141,7 @@ namespace TexturesBaker
                     : included.GroupBy(i => i.material.shader).OrderByDescending(g => g.Count()).First().Key;
             }
 
-            _plan = AtlasPlanner.Build(included, materialCount, AtlasSizes[atlasSizeIndex], padding, shader);
+            _plan = AtlasPlanner.Build(included, materialCount, AtlasSizes[atlasSizeIndex], padding, shader, splitByShaderType);
             if (shader != null && !MaterialProps.ShaderHasMainTexture(shader))
             {
                 _plan.errors.Add($"У шейдера '{shader.name}' нет основной текстуры (_MainTex/_BaseMap).");
@@ -322,6 +323,13 @@ namespace TexturesBaker
                 forcedShader = (Shader)EditorGUILayout.ObjectField(new GUIContent("Шейдер", "Пусто — самый частый среди выбранных материалов."), forcedShader, typeof(Shader), false);
                 EditorGUI.indentLevel--;
             }
+
+            splitByShaderType = EditorGUILayout.Toggle(
+                new GUIContent("Разделять атласы по типу шейдера",
+                    "Материалы с разными шейдерами или режимами отрисовки (непрозрачный, с вырезкой, прозрачный, двусторонний) " +
+                    "не попадают в один атлас: например, деревья и дома получат разные атласы. Работает и вместе с «Приводить к одному " +
+                    "шейдеру» — тип берётся по исходному шейдеру материала. Число материалов на выходе должно быть не меньше числа типов."),
+                splitByShaderType);
 
             if (EditorGUI.EndChangeCheck())
             {
