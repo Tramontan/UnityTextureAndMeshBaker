@@ -461,14 +461,7 @@ namespace MeshSectionBaker
             return $"{OutputRoot}/{sceneName}_{grid.gridId}";
         }
 
-        private static void EnsureFolder(string path)
-        {
-            if (AssetDatabase.IsValidFolder(path)) return;
-
-            string parent = Path.GetDirectoryName(path)?.Replace('\\', '/');
-            EnsureFolder(parent);
-            AssetDatabase.CreateFolder(parent, Path.GetFileName(path));
-        }
+        private static void EnsureFolder(string path) => TextureMeshBaker.AssetFolders.Ensure(path);
 
         internal static void Finish(MeshSectionGrid grid)
         {

@@ -482,15 +482,7 @@ namespace LodCreator
             return used;
         }
 
-        internal static void EnsureFolder(string path)
-        {
-            path = path.Replace('\\', '/').TrimEnd('/');
-            if (AssetDatabase.IsValidFolder(path)) return;
-
-            string parent = Path.GetDirectoryName(path)?.Replace('\\', '/');
-            EnsureFolder(parent);
-            AssetDatabase.CreateFolder(parent, Path.GetFileName(path));
-        }
+        internal static void EnsureFolder(string path) => TextureMeshBaker.AssetFolders.Ensure(path);
 
         internal static string Sanitize(string name)
         {

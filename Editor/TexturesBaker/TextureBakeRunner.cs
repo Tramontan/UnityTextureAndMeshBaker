@@ -133,26 +133,17 @@ namespace TexturesBaker
             return string.IsNullOrEmpty(scene.path) ? scene.name : scene.path;
         }
 
-        public static void EnsureFolder(string path)
-        {
-            path = path.Replace('\\', '/').TrimEnd('/');
-            if (AssetDatabase.IsValidFolder(path)) return;
-
-            string parent = Path.GetDirectoryName(path)?.Replace('\\', '/');
-            if (string.IsNullOrEmpty(parent)) throw new ArgumentException($"Invalid folder '{path}'.");
-
-            EnsureFolder(parent);
-            AssetDatabase.CreateFolder(parent, Path.GetFileName(path));
-        }
+        public static void EnsureFolder(string path) => TextureMeshBaker.AssetFolders.Ensure(path);
 
         private static string CreateOutputFolders(string root, string bakeName)
         {
             EnsureFolder(root);
-            string folder = AssetDatabase.GenerateUniqueAssetPath($"{root.TrimEnd('/')}/{Sanitize(bakeName)}");
-            AssetDatabase.CreateFolder(root.TrimEnd('/'), Path.GetFileName(folder));
+            // A name free on disk too: a directory Unity has not imported would otherwise be handed out again.
+            string folder = TextureMeshBaker.AssetFolders.UniqueNew(root, Sanitize(bakeName));
+            EnsureFolder(folder);
             foreach (string sub in new[] { "Atlases", "Materials", "Meshes", "Prefabs" })
             {
-                AssetDatabase.CreateFolder(folder, sub);
+                EnsureFolder($"{folder}/{sub}");
             }
 
             return folder;

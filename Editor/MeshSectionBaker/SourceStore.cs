@@ -306,14 +306,7 @@ namespace MeshSectionBaker
 
         // ------------------------------------------------------------------ files
 
-        private static void EnsureFolder(string path)
-        {
-            if (AssetDatabase.IsValidFolder(path)) return;
-
-            string parent = Path.GetDirectoryName(path)?.Replace('\\', '/');
-            EnsureFolder(parent);
-            AssetDatabase.CreateFolder(parent, Path.GetFileName(path));
-        }
+        private static void EnsureFolder(string path) => TextureMeshBaker.AssetFolders.Ensure(path);
 
         private static void DeleteIfEmpty(string folder)
         {
