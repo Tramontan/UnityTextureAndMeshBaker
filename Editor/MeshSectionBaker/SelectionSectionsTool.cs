@@ -111,7 +111,8 @@ namespace MeshSectionBaker
             {
                 bool editing = section.id == editingId;
                 bool baked = IsBaked(grid, section);
-                int count = section.objects.Count(o => o != null);
+                // Objects of a baked section are deleted from the scene until unbake (see SourceStore).
+                int count = section.objects.Count(o => o != null) + grid.bakedSections.Sum(b => b.relinks.Count(r => r.manualSectionId == section.id));
 
                 GUILayout.BeginHorizontal();
                 if (detailed && !baked)

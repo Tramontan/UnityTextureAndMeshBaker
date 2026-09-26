@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using LodCreator;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -34,6 +35,13 @@ namespace MeshSectionBaker
             EnsureRoots(grid);
             string folder = EnsureOutputFolder(grid);
             int baked = 0;
+
+            // Removed objects are deleted from the scene: keep those that something else points at.
+            if (grid.sourceMode == SourceObjectMode.RemoveObjects)
+            {
+                EditorUtility.DisplayProgressBar(ProgressTitle, "Проверка ссылок на объекты", 0f);
+                SourceStore.KeepReferencedUnits(grid, cells);
+            }
 
             try
             {
@@ -74,6 +82,7 @@ namespace MeshSectionBaker
             {
                 AssetDatabase.StopAssetEditing();
                 EditorUtility.ClearProgressBar();
+                SourceStore.CleanupOrphans(grid);
                 CleanupEmptyRoots(grid);
                 Finish(grid);
             }
@@ -152,6 +161,7 @@ namespace MeshSectionBaker
             }
 
             // Record where removed objects lived before touching any of them.
+            var removedRoots = new List<GameObject>();
             foreach (SourceUnit unit in cell.units)
             {
                 record.sourceObjectCount++;
@@ -162,30 +172,86 @@ namespace MeshSectionBaker
                     Transform transform = unit.root.transform;
                     record.removed.Add(new RemovedObject
                     {
-                        gameObject = unit.root,
                         parent = transform.parent,
-                        siblingIndex = transform.GetSiblingIndex()
+                        siblingIndex = transform.GetSiblingIndex(),
+                        storedIndex = removedRoots.Count
                     });
+                    removedRoots.Add(unit.root);
                 }
                 else
                 {
-                    foreach (MeshRenderer renderer in unit.renderers)
-                    {
-                        renderer.enabled = false;
-                        record.disabledRenderers.Add(renderer);
-                    }
+                    DisableRenderers(record, unit.renderers);
                 }
             }
 
-            foreach (RemovedObject removed in record.removed)
+            // Delete them from the scene, keeping a copy to spawn back on unbake.
+            if (removedRoots.Count > 0 && !SourceStore.Store(grid, record, removedRoots, folder))
             {
-                removed.gameObject.transform.SetParent(grid.sourcesHolder, true);
+                record.removed.Clear();
+                foreach (SourceUnit unit in cell.units.Where(u => u.removable)) DisableRenderers(record, unit.renderers);
             }
 
             grid.bakedSections.Add(record);
         }
 
+        private static void DisableRenderers(BakedSection record, IEnumerable<MeshRenderer> renderers)
+        {
+            foreach (MeshRenderer renderer in renderers)
+            {
+                renderer.enabled = false;
+                record.disabledRenderers.Add(renderer);
+            }
+        }
+
         private static int UnbakeSection(MeshSectionGrid grid, BakedSection section)
+        {
+            int missing = string.IsNullOrEmpty(section.sourcesPrefabPath)
+                ? RestoreFromHolder(section)
+                : SourceStore.Restore(grid, section);
+
+            foreach (MeshRenderer renderer in section.disabledRenderers)
+            {
+                if (renderer != null) EnableRenderer(renderer);
+                else missing++;
+            }
+
+            if (section.output != null)
+            {
+                // LODs made for the section (or a part of it) go with it, including their meshes.
+                foreach (LodCreatorRecord lodRecord in section.output.GetComponentsInChildren<LodCreatorRecord>(true))
+                {
+                    LodBuilder.Remove(lodRecord);
+                }
+
+                Object.DestroyImmediate(section.output);
+            }
+
+            foreach (string path in section.meshAssetPaths)
+            {
+                AssetDatabase.DeleteAsset(path);
+            }
+
+            // The sources asset is deleted later by SourceStore.CleanupOrphans: the saved scene may still refer to it.
+            grid.bakedSections.Remove(section);
+            return missing;
+        }
+
+        /// <summary>Switches the renderer back on without leaving an "enabled" override on a prefab instance that didn't have one.</summary>
+        private static void EnableRenderer(MeshRenderer renderer)
+        {
+            renderer.enabled = true;
+            if (!PrefabUtility.IsPartOfPrefabInstance(renderer)) return;
+
+            var source = PrefabUtility.GetCorrespondingObjectFromSource(renderer);
+            if (source != null && source.enabled)
+            {
+                SerializedProperty property = new SerializedObject(renderer).FindProperty("m_Enabled");
+                if (property != null && property.prefabOverride) PrefabUtility.RevertPropertyOverride(property, InteractionMode.AutomatedAction);
+            }
+        }
+
+        /// <summary>Sections baked by older versions: the removed objects are parked in the EditorOnly holder.</summary>
+        private static int RestoreFromHolder(BakedSection section)
         {
             int missing = 0;
             foreach (RemovedObject removed in section.removed.OrderBy(r => r.siblingIndex))
@@ -201,23 +267,6 @@ namespace MeshSectionBaker
                 transform.SetSiblingIndex(removed.siblingIndex);
             }
 
-            foreach (MeshRenderer renderer in section.disabledRenderers)
-            {
-                if (renderer != null) renderer.enabled = true;
-                else missing++;
-            }
-
-            if (section.output != null)
-            {
-                Object.DestroyImmediate(section.output);
-            }
-
-            foreach (string path in section.meshAssetPaths)
-            {
-                AssetDatabase.DeleteAsset(path);
-            }
-
-            grid.bakedSections.Remove(section);
             return missing;
         }
 
@@ -368,16 +417,6 @@ namespace MeshSectionBaker
                 EditorSceneManager.MoveGameObjectToScene(root, scene);
                 grid.sectionsRoot = root.transform;
             }
-
-            if (grid.sourcesHolder == null)
-            {
-                // Kept out of the grid's own hierarchy on purpose: deleting the grid object must
-                // never delete the removed source objects along with it.
-                var holder = new GameObject("[MeshSections Sources · EditorOnly]") { tag = "EditorOnly" };
-                holder.SetActive(false);
-                EditorSceneManager.MoveGameObjectToScene(holder, scene);
-                grid.sourcesHolder = holder.transform;
-            }
         }
 
         private static void CleanupEmptyRoots(MeshSectionGrid grid)
@@ -403,7 +442,7 @@ namespace MeshSectionBaker
             }
         }
 
-        private static string EnsureOutputFolder(MeshSectionGrid grid)
+        internal static string EnsureOutputFolder(MeshSectionGrid grid)
         {
             if (string.IsNullOrEmpty(grid.gridId))
             {
@@ -415,7 +454,7 @@ namespace MeshSectionBaker
             return folder;
         }
 
-        private static string OutputFolderPath(MeshSectionGrid grid)
+        internal static string OutputFolderPath(MeshSectionGrid grid)
         {
             string sceneName = string.IsNullOrEmpty(grid.gameObject.scene.name) ? "Untitled" : grid.gameObject.scene.name;
             foreach (char c in Path.GetInvalidFileNameChars()) sceneName = sceneName.Replace(c, '_');
@@ -431,7 +470,7 @@ namespace MeshSectionBaker
             AssetDatabase.CreateFolder(parent, Path.GetFileName(path));
         }
 
-        private static void Finish(MeshSectionGrid grid)
+        internal static void Finish(MeshSectionGrid grid)
         {
             // The records must never be rolled back by an unrelated Ctrl+Z on the grid (that would
             // orphan the removed objects), so drop the grid's undo history after bake/unbake.

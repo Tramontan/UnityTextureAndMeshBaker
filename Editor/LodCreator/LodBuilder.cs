@@ -230,7 +230,7 @@ namespace LodCreator
             {
                 foreach (MeshSectionGrid g in sceneRoot.GetComponentsInChildren<MeshSectionGrid>(true))
                 {
-                    BakedSection match = g.bakedSections.FirstOrDefault(s => s.output == go);
+                    BakedSection match = g.bakedSections.FirstOrDefault(s => IsPartOfSection(s, go));
                     if (match != null)
                     {
                         grid = g;
@@ -239,6 +239,12 @@ namespace LodCreator
                     }
                 }
             }
+        }
+
+        /// <summary>The section's output object or anything under it (e.g. its Render child).</summary>
+        internal static bool IsPartOfSection(BakedSection section, GameObject go)
+        {
+            return section.output != null && go.transform.IsChildOf(section.output.transform);
         }
 
         private static bool HasMesh(MeshRenderer r)
@@ -437,7 +443,7 @@ namespace LodCreator
             {
                 foreach (MeshSectionGrid grid in sceneRoot.GetComponentsInChildren<MeshSectionGrid>(true))
                 {
-                    BakedSection section = grid.bakedSections.FirstOrDefault(s => s.output == root);
+                    BakedSection section = grid.bakedSections.FirstOrDefault(s => LodObjectInfo.IsPartOfSection(s, root));
                     if (section == null) continue;
                     section.meshAssetPaths.RemoveAll(paths.Contains);
                     EditorUtility.SetDirty(grid);

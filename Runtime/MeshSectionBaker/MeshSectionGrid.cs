@@ -6,7 +6,10 @@ namespace MeshSectionBaker
 {
     public enum SourceObjectMode
     {
-        /// <summary>Source objects are moved into an inactive EditorOnly holder (gone from the scene and from builds).</summary>
+        /// <summary>
+        /// Source objects are deleted from the scene (not loaded in the editor, not in builds). An
+        /// exact copy is kept in a prefab asset outside the scene; unbaking spawns them back from it.
+        /// </summary>
         [InspectorName("Убрать со сцены")]
         RemoveObjects = 0,
 
@@ -69,6 +72,7 @@ namespace MeshSectionBaker
         public bool transferColliders = true;
 
         public Transform sectionsRoot;
+        /// <summary>Older versions only: EditorOnly holder with the removed objects of sections baked by them.</summary>
         public Transform sourcesHolder;
         public List<BakedSection> bakedSections = new List<BakedSection>();
 
@@ -227,6 +231,18 @@ namespace MeshSectionBaker
         public List<RemovedObject> removed = new List<RemovedObject>();
         public List<MeshRenderer> disabledRenderers = new List<MeshRenderer>();
         public List<string> meshAssetPaths = new List<string>();
+
+        /// <summary>
+        /// Copy of the removed objects (children in <see cref="RemovedObject.storedIndex"/> order),
+        /// spawned back on unbake. Empty path = section baked by an older version, whose removed
+        /// objects sit in <see cref="MeshSectionGrid.sourcesHolder"/>.
+        /// </summary>
+        public GameObject sourcesPrefab;
+        public string sourcesPrefabPath;
+
+        /// <summary>Selection-mode entries that pointed into removed objects, re-pointed to the respawned ones on unbake.</summary>
+        public List<RelinkEntry> relinks = new List<RelinkEntry>();
+
         public int sourceObjectCount;
         public int sourceRendererCount;
     }
@@ -234,8 +250,24 @@ namespace MeshSectionBaker
     [Serializable]
     public class RemovedObject
     {
+        /// <summary>Older versions only: the object parked in the sources holder.</summary>
         public GameObject gameObject;
+
         public Transform parent;
         public int siblingIndex;
+
+        /// <summary>Child index in <see cref="BakedSection.sourcesPrefab"/>.</summary>
+        public int storedIndex;
+    }
+
+    [Serializable]
+    public class RelinkEntry
+    {
+        public string manualSectionId;
+        public int objectIndex;
+        public int storedIndex;
+
+        /// <summary>Sibling indices from the removed root down to the listed object ("" = the root).</summary>
+        public string path;
     }
 }

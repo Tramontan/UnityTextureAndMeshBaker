@@ -377,7 +377,7 @@ namespace MeshSectionBaker
 
             bool onlyStatic = EditorGUILayout.Toggle(new GUIContent("Только Static объекты", "Сшиваются только объекты с флагом Batching Static — подвижные объекты сшивать нельзя."), grid.onlyStatic);
             var mode = (SourceObjectMode)EditorGUILayout.EnumPopup(
-                new GUIContent("Исходные объекты", "Убрать со сцены — в скрытый EditorOnly-контейнер, в билд не попадают.\nОставить, выключить рендеры — объекты остаются, выключаются только их MeshRenderer."),
+                new GUIContent("Исходные объекты", "Убрать со сцены — объекты удаляются из сцены (не грузятся ни в редакторе, ни в билде); их копия хранится в префабе Generated/…/Sources, при распекании они создаются заново на тех же местах. Объекты, на которые ссылаются другие объекты сцены, остаются (выключаются рендеры).\nОставить, выключить рендеры — объекты остаются, выключаются только их MeshRenderer."),
                 grid.sourceMode);
             bool transfer = grid.transferColliders;
             if (mode == SourceObjectMode.RemoveObjects)
@@ -469,9 +469,34 @@ namespace MeshSectionBaker
             EditorGUILayout.LabelField($"Запечённые секции ({grid.bakedSections.Count})", EditorStyles.boldLabel);
             if (grid.bakedSections.Count == 0) return;
 
-            if (grid.sourcesHolder == null && grid.bakedSections.Any(s => s.removed.Count > 0))
+            if (grid.sourcesHolder == null && grid.bakedSections.Any(s => s.removed.Count > 0 && string.IsNullOrEmpty(s.sourcesPrefabPath)))
             {
                 EditorGUILayout.HelpBox("Контейнер с исходными объектами удалён — удалённые объекты вернуть не получится.", MessageType.Error);
+            }
+
+            List<string> lostStores = grid.bakedSections
+                .Where(s => !string.IsNullOrEmpty(s.sourcesPrefabPath) && s.sourcesPrefab == null)
+                .Select(s => s.name).ToList();
+            if (lostStores.Count > 0)
+            {
+                EditorGUILayout.HelpBox($"Не найден файл с исходными объектами ({string.Join(", ", lostStores)}) — удалённые объекты этих секций вернуть не получится.", MessageType.Error);
+            }
+
+            List<BakedSection> legacy = grid.bakedSections.Where(SourceStore.IsLegacy).ToList();
+            if (legacy.Count > 0 && grid.sourcesHolder != null)
+            {
+                EditorGUILayout.HelpBox($"Секций, запечённых прежней версией: {legacy.Count}. Их исходные объекты ({legacy.Sum(s => s.removed.Count(r => r.gameObject != null))}) " +
+                                        "лежат в скрытом контейнере в сцене. Перенесите их в хранилище — они удалятся со сцены, распекание вернёт их как обычно.", MessageType.Warning);
+                using (new EditorGUI.DisabledScope(EditorApplication.isPlaying))
+                {
+                    if (GUILayout.Button("Удалить исходники со сцены (перенести в хранилище)"))
+                    {
+                        int moved = SourceStore.MigrateLegacy(grid);
+                        MarkDirty();
+                        SceneView.lastActiveSceneView?.ShowNotification(new GUIContent($"Перенесено объектов: {moved}"));
+                        GUIUtility.ExitGUI();
+                    }
+                }
             }
 
             using (new EditorGUI.DisabledScope(EditorApplication.isPlaying))

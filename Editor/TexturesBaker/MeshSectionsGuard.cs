@@ -9,9 +9,9 @@ using UnityEngine.SceneManagement;
 namespace TexturesBaker
 {
     /// <summary>
-    /// Swapping prefab instances while Mesh Section Baker has sections baked would replace the
-    /// source objects parked in its EditorOnly holder, leaving the section records pointing at
-    /// destroyed objects (and unbaking sections unable to restore them). Block that case.
+    /// Swapping prefab instances while Mesh Section Baker has sections baked would leave the
+    /// removed source objects (kept in its stores, or in the holder of older versions) on the
+    /// old prefabs - unbaking would bring back pre-swap or deleted prefabs. Block that case.
     /// Same for LODs made by Tools/Создание LOD on prefab instances: the swap would drop them.
     /// </summary>
     public static class MeshSectionsGuard
